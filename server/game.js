@@ -8,6 +8,7 @@
  */
 
 const { clamp, randomPoint, permutation } = require('./gameutil');
+const redis = require('redis').createClient();
 
 const WIDTH = 64;
 const HEIGHT = 64;
@@ -37,19 +38,36 @@ const database = {
 };
 
 exports.addPlayer = (name) => {
-  if (name.length === 0 || name.length > MAX_PLAYER_NAME_LENGTH || database.usednames.has(name)) {
-    return false;
+  if (name.length !== 0 || name.length <= MAX_PLAYER_NAME_LENGTH) {
+    return redis.sismember('usednames', name, (err, res) => {
+      if (res === 1) {
+        return false;
+      }
+
+      database.usednames.add(name);
+      database[`player:${name}`] = randomPoint(WIDTH, HEIGHT).toString();
+      database.scores[name] = 0;
+
+      redis.multi()
+           .sadd('usednames', name)
+           .setex(`player:${name}`, 5 * 60, randomPoint(WIDTH, HEIGHT).toString())
+           .zadd('scores', 0, name)
+           .exec((err2, res2) => {
+             console.log(`Created player, added timeout, and added their score with response ${res2}`);
+           });
+      return true;
+    });
   }
-  database.usednames.add(name);
-  database[`player:${name}`] = randomPoint(WIDTH, HEIGHT).toString();
-  database.scores[name] = 0;
-  return true;
+  return false;
 };
 
 function placeCoins() {
+  console.log('placing...');
+  redis.del('coins');
   permutation(WIDTH * HEIGHT).slice(0, NUM_COINS).forEach((position, i) => {
     const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
     const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
+    redis.hset('coins', index, coinValue);
     database.coins[index] = coinValue;
   });
 }
@@ -63,6 +81,8 @@ exports.state = () => {
     .filter(([key]) => key.startsWith('player:'))
     .map(([key, value]) => [key.substring(7), value]);
   const scores = Object.entries(database.scores);
+  // There's a space because we don't care what the first value is:
+  // [['jb', 20], ['kb', 15], ['ll', 20]] -> We only care about numbers not names
   scores.sort(([, v1], [, v2]) => v1 < v2);
   return {
     positions,
@@ -90,5 +110,9 @@ exports.move = (direction, name) => {
     }
   }
 };
+
+redis.on('error', (err) => {
+  console.error(`Error: ${err}`);
+});
 
 placeCoins();
