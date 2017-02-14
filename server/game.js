@@ -14,6 +14,7 @@ const WIDTH = 64;
 const HEIGHT = 64;
 const MAX_PLAYER_NAME_LENGTH = 32;
 const NUM_COINS = 100;
+const PLAYER_EXPIRE_TIME = 300;
 
 
 // A KEY-VALUE "DATABASE" FOR THE GAME STATE.
@@ -37,33 +38,42 @@ const database = {
   coins: {},
 };
 
-exports.addPlayer = (name) => {
+exports.addPlayer = (name, io, socket, listener, game) => {
   if (name.length !== 0 || name.length <= MAX_PLAYER_NAME_LENGTH) {
-    return redis.sismember('usednames', name, (err, res) => {
+    redis.sismember('usednames', name, (err, res) => {
       if (res === 1) {
+        io.to(socket.id).emit('badname', name);
         return false;
       }
-
       database.usednames.add(name);
       database[`player:${name}`] = randomPoint(WIDTH, HEIGHT).toString();
       database.scores[name] = 0;
 
       redis.multi()
            .sadd('usednames', name)
-           .setex(`player:${name}`, 5 * 60, randomPoint(WIDTH, HEIGHT).toString())
+           .setex(`player:${name}`, PLAYER_EXPIRE_TIME, randomPoint(WIDTH, HEIGHT).toString())
            .zadd('scores', 0, name)
            .exec((err2, res2) => {
              console.log(`Created player, added timeout, and added their score with response ${res2}`);
+             io.to(socket.id).emit('welcome');
+             io.emit('state', game.state());
+             socket.removeListener('name', listener);
+             socket.on('move', (direction) => {
+               game.move(direction, name);
+               io.emit('state', game.state());
+             });
            });
       return true;
     });
+  } else {
+    io.to(socket.id).emit('badname', name);
   }
-  return false;
 };
 
 function placeCoins() {
-  console.log('placing...');
-  redis.del('coins');
+  redis.del('coins', (err, res) => {
+    console.log(`All coins were deleted with a result of ${res}`);
+  });
   permutation(WIDTH * HEIGHT).slice(0, NUM_COINS).forEach((position, i) => {
     const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
     const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
@@ -109,6 +119,10 @@ exports.move = (direction, name) => {
       placeCoins();
     }
   }
+};
+
+exports.killPlayer = (player) => {
+  console.log(`He's dead, ${player}`);
 };
 
 redis.on('error', (err) => {
