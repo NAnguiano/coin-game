@@ -11,3 +11,5 @@ rules:
     off
   no-nested-ternary:
     off
+  no-shadow:
+    off

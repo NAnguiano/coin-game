@@ -53,14 +53,18 @@ exports.addPlayer = (name, io, socket, listener, game) => {
            .sadd('usednames', name)
            .setex(`player:${name}`, PLAYER_EXPIRE_TIME, randomPoint(WIDTH, HEIGHT).toString())
            .zadd('scores', 0, name)
-           .exec((err2, res2) => {
-             console.log(`Created player, added timeout, and added their score with response ${res2}`);
+           .exec((err, res) => {
+             console.log(`Created player, added timeout, and added their score with response ${res}`);
              io.to(socket.id).emit('welcome');
-             io.emit('state', game.state());
+             game.state((err, result) => {
+               io.emit('state', result);
+             });
              socket.removeListener('name', listener);
              socket.on('move', (direction) => {
                game.move(direction, name);
-               io.emit('state', game.state());
+               game.state((err, result) => {
+                 io.emit('state', result);
+               });
              });
            });
       return true;
@@ -72,13 +76,13 @@ exports.addPlayer = (name, io, socket, listener, game) => {
 
 function placeCoins() {
   redis.del('coins', (err, res) => {
-    console.log(`All coins were deleted with a result of ${res}`);
-  });
-  permutation(WIDTH * HEIGHT).slice(0, NUM_COINS).forEach((position, i) => {
-    const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
-    const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
-    redis.hset('coins', index, coinValue);
-    database.coins[index] = coinValue;
+    console.log(`Coins deleted with response ${res}`);
+    permutation(WIDTH * HEIGHT).slice(0, NUM_COINS).forEach((position, i) => {
+      const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
+      const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
+      redis.hset('coins', index, coinValue);
+      database.coins[index] = coinValue;
+    });
   });
 }
 
@@ -86,19 +90,48 @@ function placeCoins() {
 // the positions of each player, the scores, and the positions (and values) of each coin.
 // Note that we return the scores in sorted order, so the client just has to iteratively
 // walk through an array of name-score pairs and render them.
-exports.state = () => {
+exports.state = (callback) => {
+  redis.multi()
+       .smembers('usednames')
+       .hgetall('coins')
+       .zrevrange('scores', 0, -1, 'WITHSCORES')
+       .exec((err, res) => {
+         const coins = res[1];
+         const scores = [];
+         while (res[2].length) scores.push(res[2].splice(0, 2));
+         console.log(scores);
+         const positions = [];
+         const len = res[0].length;
+         const returnState = () => (
+           callback(null, { positions, scores, coins })
+         );
+
+         let counter = 0;
+         res[0].forEach((name) => {
+           const key = `player:${name}`;
+           redis.get(key, (err, res) => {
+             positions.push([key.substring(7), res]);
+             counter += 1;
+             if (counter >= len) {
+               returnState();
+             }
+           });
+         });
+       });
+  /*
   const positions = Object.entries(database)
     .filter(([key]) => key.startsWith('player:'))
     .map(([key, value]) => [key.substring(7), value]);
   const scores = Object.entries(database.scores);
   // There's a space because we don't care what the first value is:
   // [['jb', 20], ['kb', 15], ['ll', 20]] -> We only care about numbers not names
-  scores.sort(([, v1], [, v2]) => v1 < v2);
+  scores.sort(([, v1], [, v2]) => v1 - v2);
   return {
     positions,
     scores,
     coins: database.coins,
   };
+  */
 };
 
 exports.move = (direction, name) => {
