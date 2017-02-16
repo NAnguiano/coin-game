@@ -32,11 +32,6 @@ const PLAYER_EXPIRE_TIME = 300;
 // coins            hash         { "<row>,<col>": coinvalue }
 // usednames        set          all used names, to check quickly if a name has been used
 //
-const database = {
-  scores: {},
-  usednames: new Set(),
-  coins: {},
-};
 
 exports.addPlayer = (name, io, socket, listener, game) => {
   if (name.length !== 0 || name.length <= MAX_PLAYER_NAME_LENGTH) {
@@ -45,9 +40,6 @@ exports.addPlayer = (name, io, socket, listener, game) => {
         io.to(socket.id).emit('badname', name);
         return false;
       }
-      database.usednames.add(name);
-      database[`player:${name}`] = randomPoint(WIDTH, HEIGHT).toString();
-      database.scores[name] = 0;
 
       redis.multi()
            .sadd('usednames', name)
@@ -61,9 +53,11 @@ exports.addPlayer = (name, io, socket, listener, game) => {
              });
              socket.removeListener('name', listener);
              socket.on('move', (direction) => {
-               game.move(direction, name);
-               game.state((err, result) => {
-                 io.emit('state', result);
+               game.move(direction, name, (err) => {
+                 if (err) console.error('PROBLEMS!');
+                 game.state((err, result) => {
+                   io.emit('state', result);
+                 });
                });
              });
            });
@@ -81,7 +75,6 @@ function placeCoins() {
       const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
       const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
       redis.hset('coins', index, coinValue);
-      database.coins[index] = coinValue;
     });
   });
 }
@@ -99,7 +92,6 @@ exports.state = (callback) => {
          const coins = res[1];
          const scores = [];
          while (res[2].length) scores.push(res[2].splice(0, 2));
-         console.log(scores);
          const positions = [];
          const len = res[0].length;
          const returnState = () => (
@@ -118,39 +110,37 @@ exports.state = (callback) => {
            });
          });
        });
-  /*
-  const positions = Object.entries(database)
-    .filter(([key]) => key.startsWith('player:'))
-    .map(([key, value]) => [key.substring(7), value]);
-  const scores = Object.entries(database.scores);
-  // There's a space because we don't care what the first value is:
-  // [['jb', 20], ['kb', 15], ['ll', 20]] -> We only care about numbers not names
-  scores.sort(([, v1], [, v2]) => v1 - v2);
-  return {
-    positions,
-    scores,
-    coins: database.coins,
-  };
-  */
 };
 
-exports.move = (direction, name) => {
+exports.move = (direction, name, callback) => {
   const delta = { U: [0, -1], R: [1, 0], D: [0, 1], L: [-1, 0] }[direction];
   if (delta) {
     const playerKey = `player:${name}`;
-    const [x, y] = database[playerKey].split(',');
-    const [newX, newY] = [clamp(+x + delta[0], 0, WIDTH - 1), clamp(+y + delta[1], 0, HEIGHT - 1)];
-    const value = database.coins[`${newX},${newY}`];
-    if (value) {
-      database.scores[name] += value;
-      delete database.coins[`${newX},${newY}`];
-    }
-    database[playerKey] = `${newX},${newY}`;
-
-    // When all coins collected, generate a new batch.
-    if (Object.keys(database.coins).length === 0) {
-      placeCoins();
-    }
+    redis.get(playerKey, (err, res) => {
+      console.log(res);
+      const [x, y] = res.split(',');
+      const [newX, newY] = [clamp(+x + delta[0], 0, WIDTH - 1),
+        clamp(+y + delta[1], 0, HEIGHT - 1)];
+      redis.hget('coins', `${newX},${newY}`, (err, value) => {
+        console.log(value);
+        if (value) {
+          redis.multi()
+               .zincrby('scores', value, name)
+               .hdel('coins', `${newX},${newY}`)
+               .hlen('coins')
+               .exec((err, res) => {
+                 console.log(res);
+                 if (res[2] === 0) {
+                   placeCoins();
+                 }
+               });
+        }
+        redis.setex(playerKey, PLAYER_EXPIRE_TIME, `${newX},${newY}`, (err, res) => {
+          console.log(res);
+          callback(null, 0);
+        });
+      });
+    });
   }
 };
 
