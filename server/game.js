@@ -45,15 +45,15 @@ exports.addPlayer = (name, io, socket, listener, game) => {
            .sadd('usednames', name)
            .setex(`player:${name}`, PLAYER_EXPIRE_TIME, randomPoint(WIDTH, HEIGHT).toString())
            .zadd('scores', 0, name)
-           .exec((err, res) => {
-             console.log(`Created player, added timeout, and added their score with response ${res}`);
+           .exec((err) => {
+             if (err) console.error('PROBLEMS!');
              io.to(socket.id).emit('welcome');
              game.state((err, result) => {
                io.emit('state', result);
              });
              socket.removeListener('name', listener);
              socket.on('move', (direction) => {
-               game.move(direction, name, (err) => {
+               game.move(direction, name, game, io, (err) => {
                  if (err) console.error('PROBLEMS!');
                  game.state((err, result) => {
                    io.emit('state', result);
@@ -68,13 +68,17 @@ exports.addPlayer = (name, io, socket, listener, game) => {
   }
 };
 
-function placeCoins() {
-  redis.del('coins', (err, res) => {
-    console.log(`Coins deleted with response ${res}`);
-    permutation(WIDTH * HEIGHT).slice(0, NUM_COINS).forEach((position, i) => {
+function placeCoins(callback) {
+  redis.del('coins', (err) => {
+    if (err) console.error('Coins not deleted.');
+    const permutations = permutation(WIDTH * HEIGHT).slice(0, NUM_COINS);
+    permutations.forEach((position, i) => {
       const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
       const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
-      redis.hset('coins', index, coinValue);
+      redis.hset('coins', index, coinValue, (err) => {
+        if (err) console.err('I really don\'t know how you managed to get here.');
+        if (i === permutations.length - 1) callback(null);
+      });
     });
   });
 }
@@ -93,50 +97,44 @@ exports.state = (callback) => {
          const scores = [];
          while (res[2].length) scores.push(res[2].splice(0, 2));
          const positions = [];
-         const len = res[0].length;
-         const returnState = () => (
-           callback(null, { positions, scores, coins })
-         );
-
-         let counter = 0;
-         res[0].forEach((name) => {
+         res[0].forEach((name, i) => {
            const key = `player:${name}`;
            redis.get(key, (err, res) => {
              positions.push([key.substring(7), res]);
-             counter += 1;
-             if (counter >= len) {
-               returnState();
-             }
+             if (i === res[0].length - 1) callback(null, { positions, scores, coins });
            });
          });
        });
 };
 
-exports.move = (direction, name, callback) => {
+exports.move = (direction, name, game, io, callback) => {
   const delta = { U: [0, -1], R: [1, 0], D: [0, 1], L: [-1, 0] }[direction];
   if (delta) {
     const playerKey = `player:${name}`;
     redis.get(playerKey, (err, res) => {
-      console.log(res);
       const [x, y] = res.split(',');
       const [newX, newY] = [clamp(+x + delta[0], 0, WIDTH - 1),
         clamp(+y + delta[1], 0, HEIGHT - 1)];
       redis.hget('coins', `${newX},${newY}`, (err, value) => {
-        console.log(value);
         if (value) {
           redis.multi()
                .zincrby('scores', value, name)
                .hdel('coins', `${newX},${newY}`)
                .hlen('coins')
                .exec((err, res) => {
-                 console.log(res);
+                 if (err) console.error('Problems!');
                  if (res[2] === 0) {
-                   placeCoins();
+                   placeCoins((err) => {
+                     if (err) console.error('Coins could not be placed.');
+                     game.state((err, result) => {
+                       io.emit('state', result);
+                     });
+                   });
                  }
                });
         }
-        redis.setex(playerKey, PLAYER_EXPIRE_TIME, `${newX},${newY}`, (err, res) => {
-          console.log(res);
+        redis.setex(playerKey, PLAYER_EXPIRE_TIME, `${newX},${newY}`, (err) => {
+          if (err) console.error('???');
           callback(null, 0);
         });
       });
@@ -152,4 +150,7 @@ redis.on('error', (err) => {
   console.error(`Error: ${err}`);
 });
 
-placeCoins();
+placeCoins((err) => {
+  if (err) console.error('Coins could not be placed.');
+  console.log('Game has begun.');
+});
