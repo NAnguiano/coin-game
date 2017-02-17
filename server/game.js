@@ -14,7 +14,7 @@ const WIDTH = 64;
 const HEIGHT = 64;
 const MAX_PLAYER_NAME_LENGTH = 32;
 const NUM_COINS = 100;
-const PLAYER_EXPIRE_TIME = 300;
+// const PLAYER_EXPIRE_TIME = 300;
 
 
 // A KEY-VALUE "DATABASE" FOR THE GAME STATE.
@@ -33,7 +33,7 @@ const PLAYER_EXPIRE_TIME = 300;
 // usednames        set          all used names, to check quickly if a name has been used
 //
 
-exports.addPlayer = (name, io, socket, listener, game) => {
+exports.addPlayer = (name, io, socket, listener, game, callback) => {
   if (name.length !== 0 || name.length <= MAX_PLAYER_NAME_LENGTH) {
     redis.sismember('usednames', name, (err, res) => {
       if (res === 1) {
@@ -43,23 +43,11 @@ exports.addPlayer = (name, io, socket, listener, game) => {
 
       redis.multi()
            .sadd('usednames', name)
-           .setex(`player:${name}`, PLAYER_EXPIRE_TIME, randomPoint(WIDTH, HEIGHT).toString())
+           .set(`player:${name}`, randomPoint(WIDTH, HEIGHT).toString())
            .zadd('scores', 0, name)
            .exec((err) => {
              if (err) console.error('PROBLEMS!');
-             io.to(socket.id).emit('welcome');
-             game.state((err, result) => {
-               io.emit('state', result);
-             });
-             socket.removeListener('name', listener);
-             socket.on('move', (direction) => {
-               game.move(direction, name, game, io, (err) => {
-                 if (err) console.error('PROBLEMS!');
-                 game.state((err, result) => {
-                   io.emit('state', result);
-                 });
-               });
-             });
+             callback(null);
            });
       return true;
     });
@@ -97,12 +85,21 @@ exports.state = (callback) => {
          const scores = [];
          while (res[2].length) scores.push(res[2].splice(0, 2));
          const positions = [];
-         res[0].forEach((name, i) => {
+         const addToPositions = (name, cb) => {
            const key = `player:${name}`;
            redis.get(key, (err, res) => {
              positions.push([key.substring(7), res]);
-             if (i === res[0].length - 1) callback(null, { positions, scores, coins });
+             cb();
            });
+         };
+         const requests = res[0].map((name) => {
+           console.log(`Processing ${name}`);
+           return new Promise((resolve) => {
+             addToPositions(name, resolve);
+           });
+         });
+         Promise.all(requests).then(() => {
+           callback(null, { positions, scores, coins });
          });
        });
 };
@@ -127,13 +124,14 @@ exports.move = (direction, name, game, io, callback) => {
                    placeCoins((err) => {
                      if (err) console.error('Coins could not be placed.');
                      game.state((err, result) => {
+                       // console.log(result);
                        io.emit('state', result);
                      });
                    });
                  }
                });
         }
-        redis.setex(playerKey, PLAYER_EXPIRE_TIME, `${newX},${newY}`, (err) => {
+        redis.set(playerKey, `${newX},${newY}`, (err) => {
           if (err) console.error('???');
           callback(null, 0);
         });
