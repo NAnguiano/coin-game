@@ -115,32 +115,34 @@ exports.move = (direction, name, game, io, callback) => {
   if (delta) {
     const playerKey = `player:${name}`;
     redis.get(playerKey, (err, res) => {
-      const [x, y] = res.split(',');
-      const [newX, newY] = [clamp(+x + delta[0], 0, WIDTH - 1),
-        clamp(+y + delta[1], 0, HEIGHT - 1)];
-      redis.hget('coins', `${newX},${newY}`, (err, value) => {
-        if (value) {
-          redis.multi()
-               .zincrby('scores', value, name)
-               .hdel('coins', `${newX},${newY}`)
-               .hlen('coins')
-               .exec((err, res) => {
-                 if (err) console.error('An error occurred in execution.');
-                 if (res[2] === 0) {
-                   placeCoins((err) => {
-                     if (err) console.error('Coins could not be placed.');
-                     game.state((err, result) => {
-                       io.emit('state', result);
+      if (res) {
+        const [x, y] = res.split(',');
+        const [newX, newY] = [clamp(+x + delta[0], 0, WIDTH - 1),
+          clamp(+y + delta[1], 0, HEIGHT - 1)];
+        redis.hget('coins', `${newX},${newY}`, (err, value) => {
+          if (value) {
+            redis.multi()
+                 .zincrby('scores', value, name)
+                 .hdel('coins', `${newX},${newY}`)
+                 .hlen('coins')
+                 .exec((err, res) => {
+                   if (err) console.error('An error occurred in execution.');
+                   if (res[2] === 0) {
+                     placeCoins((err) => {
+                       if (err) console.error('Coins could not be placed.');
+                       game.state((err, result) => {
+                         io.emit('state', result);
+                       });
                      });
-                   });
-                 }
-               });
-        }
-        redis.setex(playerKey, PLAYER_EXPIRE_TIME, `${newX},${newY}`, (err) => {
-          if (err) console.error('???');
-          callback(null, 0);
+                   }
+                 });
+          }
+          redis.setex(playerKey, PLAYER_EXPIRE_TIME, `${newX},${newY}`, (err) => {
+            if (err) console.error('???');
+            callback(null, 0);
+          });
         });
-      });
+      }
     });
   }
 };
