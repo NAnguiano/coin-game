@@ -33,7 +33,7 @@ const NUM_COINS = 100;
 // usednames        set          all used names, to check quickly if a name has been used
 //
 
-exports.addPlayer = (name, io, socket, listener, game, callback) => {
+exports.addPlayer = (name, io, socket, listener, callback) => {
   if (name.length !== 0 || name.length <= MAX_PLAYER_NAME_LENGTH) {
     redis.sismember('usednames', name, (err, res) => {
       if (res === 1) {
@@ -46,7 +46,7 @@ exports.addPlayer = (name, io, socket, listener, game, callback) => {
            .set(`player:${name}`, randomPoint(WIDTH, HEIGHT).toString())
            .zadd('scores', 0, name)
            .exec((err) => {
-             if (err) console.error('PROBLEMS!');
+             if (err) console.error('Something went wrong!');
              callback(null);
            });
       return true;
@@ -59,6 +59,23 @@ exports.addPlayer = (name, io, socket, listener, game, callback) => {
 function placeCoins(callback) {
   redis.del('coins', (err) => {
     if (err) console.error('Coins not deleted.');
+    const registerCoinPosition = (index, coinValue, cb) => {
+      redis.hset('coins', index, coinValue, (err) => {
+        if (err) console.err('Coin could not be registered.');
+        cb();
+      });
+    };
+    const permutations = permutation(WIDTH * HEIGHT).slice(0, NUM_COINS).map((position, i) => {
+      const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
+      const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
+      return new Promise((resolve) => {
+        registerCoinPosition(index, coinValue, resolve);
+      });
+    });
+    Promise.all(permutations).then(() => {
+      callback(null);
+    });
+    /*
     const permutations = permutation(WIDTH * HEIGHT).slice(0, NUM_COINS);
     permutations.forEach((position, i) => {
       const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
@@ -68,6 +85,7 @@ function placeCoins(callback) {
         if (i === permutations.length - 1) callback(null);
       });
     });
+    */
   });
 }
 
@@ -85,17 +103,16 @@ exports.state = (callback) => {
          const scores = [];
          while (res[2].length) scores.push(res[2].splice(0, 2));
          const positions = [];
-         const addToPositions = (name, cb) => {
-           const key = `player:${name}`;
+         const addToPositions = (key, cb) => {
            redis.get(key, (err, res) => {
              positions.push([key.substring(7), res]);
              cb();
            });
          };
          const requests = res[0].map((name) => {
-           console.log(`Processing ${name}`);
+           const key = `player:${name}`;
            return new Promise((resolve) => {
-             addToPositions(name, resolve);
+             addToPositions(key, resolve);
            });
          });
          Promise.all(requests).then(() => {
@@ -119,12 +136,11 @@ exports.move = (direction, name, game, io, callback) => {
                .hdel('coins', `${newX},${newY}`)
                .hlen('coins')
                .exec((err, res) => {
-                 if (err) console.error('Problems!');
+                 if (err) console.error('An error occurred in execution.');
                  if (res[2] === 0) {
                    placeCoins((err) => {
                      if (err) console.error('Coins could not be placed.');
                      game.state((err, result) => {
-                       // console.log(result);
                        io.emit('state', result);
                      });
                    });
