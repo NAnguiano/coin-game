@@ -14,7 +14,7 @@ const WIDTH = 64;
 const HEIGHT = 64;
 const MAX_PLAYER_NAME_LENGTH = 32;
 const NUM_COINS = 100;
-// const PLAYER_EXPIRE_TIME = 300;
+const PLAYER_EXPIRE_TIME = 300;
 
 
 // A KEY-VALUE "DATABASE" FOR THE GAME STATE.
@@ -43,7 +43,7 @@ exports.addPlayer = (name, io, socket, listener, callback) => {
 
       redis.multi()
            .sadd('usednames', name)
-           .set(`player:${name}`, randomPoint(WIDTH, HEIGHT).toString())
+           .setex(`player:${name}`, PLAYER_EXPIRE_TIME, randomPoint(WIDTH, HEIGHT).toString())
            .zadd('scores', 0, name)
            .exec((err) => {
              if (err) console.error('Something went wrong!');
@@ -75,17 +75,6 @@ function placeCoins(callback) {
     Promise.all(permutations).then(() => {
       callback(null);
     });
-    /*
-    const permutations = permutation(WIDTH * HEIGHT).slice(0, NUM_COINS);
-    permutations.forEach((position, i) => {
-      const coinValue = (i < 50) ? 1 : (i < 75) ? 2 : (i < 95) ? 5 : 10;
-      const index = `${Math.floor(position / WIDTH)},${Math.floor(position % WIDTH)}`;
-      redis.hset('coins', index, coinValue, (err) => {
-        if (err) console.err('I really don\'t know how you managed to get here.');
-        if (i === permutations.length - 1) callback(null);
-      });
-    });
-    */
   });
 }
 
@@ -105,7 +94,7 @@ exports.state = (callback) => {
          const positions = [];
          const addToPositions = (key, cb) => {
            redis.get(key, (err, res) => {
-             positions.push([key.substring(7), res]);
+             if (res) positions.push([key.substring(7), res]);
              cb();
            });
          };
@@ -147,17 +136,13 @@ exports.move = (direction, name, game, io, callback) => {
                  }
                });
         }
-        redis.set(playerKey, `${newX},${newY}`, (err) => {
+        redis.setex(playerKey, PLAYER_EXPIRE_TIME, `${newX},${newY}`, (err) => {
           if (err) console.error('???');
           callback(null, 0);
         });
       });
     });
   }
-};
-
-exports.killPlayer = (player) => {
-  console.log(`He's dead, ${player}`);
 };
 
 redis.on('error', (err) => {
